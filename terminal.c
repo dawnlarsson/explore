@@ -794,6 +794,9 @@ void ui_list_begin(UIListState *s, const UIListParams *p, int key)
                 s->last_mouse_y = term_mouse.y;
         }
 
+        if (term_mouse.left || term_mouse.right || term_mouse.wheel != 0)
+                s->ignore_mouse = false;
+
         if (key >= KEY_UP && key <= KEY_SHIFT_PAGE_DOWN)
                 s->ignore_mouse = true;
 
@@ -1176,17 +1179,25 @@ bool ui_list_is_animating(UIListState *s)
 
 void ui_list_tick_animations(UIListState *s, int sel_x, int sel_y)
 {
-        if (s->carrying)
-        {
-                float tx = sel_x + (s->mode == UI_MODE_LIST ? 45 : s->p.cell_w / 2);
-                float ty = sel_y + (s->mode == UI_MODE_LIST ? -1 : s->p.cell_h / 2);
-                s->carry_x += (tx - s->carry_x) * ANIM_SPEED_CARRY;
-                s->carry_y += (ty - s->carry_y) * ANIM_SPEED_CARRY;
-        }
-        else if (s->is_dragging)
+        if (s->is_dragging)
         {
                 s->carry_x = term_mouse.x - (s->mode == UI_MODE_LIST ? 2 : s->drag_off_x);
                 s->carry_y = term_mouse.y - (s->mode == UI_MODE_LIST ? 1 : s->drag_off_y);
+        }
+        else if (s->carrying)
+        {
+                if (!s->ignore_mouse)
+                {
+                        s->carry_x += (term_mouse.x - s->carry_x) * ANIM_SPEED_CARRY;
+                        s->carry_y += (term_mouse.y - s->carry_y) * ANIM_SPEED_CARRY;
+                }
+                else
+                {
+                        float tx = sel_x + (s->mode == UI_MODE_LIST ? 45 : s->p.cell_w / 2);
+                        float ty = sel_y + (s->mode == UI_MODE_LIST ? -1 : s->p.cell_h / 2);
+                        s->carry_x += (tx - s->carry_x) * ANIM_SPEED_CARRY;
+                        s->carry_y += (ty - s->carry_y) * ANIM_SPEED_CARRY;
+                }
         }
         else if (s->is_kb_dragging)
         {

@@ -123,7 +123,7 @@ void draw_item_grid(AppState *app, FileEntry *e, int x, int y, int w, int h, boo
                 float_y = app->pop_is_out ? (int)((1.0f - app->pop_anim) * 2.0f) : -(int)(app->pop_anim * 2.0f);
         y += float_y;
 
-        Color item_bg = (is_drop_target && e->is_dir) ? (Color){50, 150, 50} : (is_ghost ? (Color){30, 30, 30} : (is_multi_sel ? ((is_hover || is_sel) ? (Color){65, 105, 165} : clr_sel_bg) : ((is_hover || is_sel) ? clr_hover : clr_bg)));
+        Color item_bg = (is_drop_target && e->is_dir) ? (Color){50, 150, 50} : (is_ghost ? (is_sel ? (Color){60, 60, 60} : (Color){30, 30, 30}) : (is_multi_sel ? ((is_hover || is_sel) ? (Color){65, 105, 165} : clr_sel_bg) : ((is_hover || is_sel) ? clr_hover : clr_bg)));
 
         if (is_popping)
         {
@@ -133,7 +133,7 @@ void draw_item_grid(AppState *app, FileEntry *e, int x, int y, int w, int h, boo
                 item_bg.b = item_bg.b + flash > 255 ? 255 : item_bg.b + flash;
         }
 
-        Color icon_fg = is_ghost ? (Color){100, 100, 100} : (e->is_dir ? clr_folder : (e->is_exec ? (Color){85, 255, 85} : clr_text));
+        Color icon_fg = is_ghost ? (is_sel ? (Color){200, 200, 200} : (Color){100, 100, 100}) : (e->is_dir ? clr_folder : (e->is_exec ? (Color){85, 255, 85} : clr_text));
 
         if (is_hover || is_sel || is_ghost || is_drop_target || is_multi_sel || is_popping)
                 ui_rect(x + 1, y, w - 2, h, item_bg);
@@ -195,7 +195,7 @@ void draw_item_list(AppState *app, FileEntry *e, int x, int y, int w, int h, boo
                 float_y = app->pop_is_out ? (int)((1.0f - app->pop_anim) * 1.0f) : -(int)(app->pop_anim * 1.0f);
         y += float_y;
 
-        Color item_bg = (is_drop_target && e->is_dir) ? (Color){50, 150, 50} : (is_ghost ? (Color){30, 30, 30} : (is_multi_sel ? ((is_hover || is_sel) ? (Color){65, 105, 165} : clr_sel_bg) : ((is_hover || is_sel) ? clr_hover : clr_bg)));
+        Color item_bg = (is_drop_target && e->is_dir) ? (Color){50, 150, 50} : (is_ghost ? (is_sel ? (Color){60, 60, 60} : (Color){30, 30, 30}) : (is_multi_sel ? ((is_hover || is_sel) ? (Color){65, 105, 165} : clr_sel_bg) : ((is_hover || is_sel) ? clr_hover : clr_bg)));
 
         if (is_popping)
         {
@@ -205,7 +205,7 @@ void draw_item_list(AppState *app, FileEntry *e, int x, int y, int w, int h, boo
                 item_bg.b = item_bg.b + flash > 255 ? 255 : item_bg.b + flash;
         }
 
-        Color icon_fg = is_ghost ? (Color){100, 100, 100} : (e->is_dir ? clr_folder : (e->is_exec ? (Color){85, 255, 85} : clr_text));
+        Color icon_fg = is_ghost ? (is_sel ? (Color){200, 200, 200} : (Color){100, 100, 100}) : (e->is_dir ? clr_folder : (e->is_exec ? (Color){85, 255, 85} : clr_text));
 
         ui_rect(x, y, w, 1, item_bg);
 
