@@ -743,6 +743,10 @@ void ui_list_reset(UIListState *s)
         int fly_origin_x = s->fly_origin_x, fly_origin_y = s->fly_origin_y, drop_dst_x = s->drop_dst_x, drop_dst_y = s->drop_dst_y;
         bool fly_is_pickup = s->fly_is_pickup, drop_to_target = s->drop_to_target, carrying = s->carrying;
 
+        int last_mouse_x = s->last_mouse_x;
+        int last_mouse_y = s->last_mouse_y;
+        bool ignore_mouse = s->ignore_mouse;
+
         *s = (UIListState){0};
 
         s->selections = sel;
@@ -761,6 +765,10 @@ void ui_list_reset(UIListState *s)
         s->fly_is_pickup = fly_is_pickup;
         s->drop_to_target = drop_to_target;
         s->carrying = carrying;
+
+        s->last_mouse_x = last_mouse_x;
+        s->last_mouse_y = last_mouse_y;
+        s->ignore_mouse = ignore_mouse;
 
         s->selected_idx = s->drag_idx = s->drop_target_idx = s->action_drop_src = s->action_drop_dst = s->action_click_idx = s->kb_drag_idx = -1;
         ui_list_clear_selections(s);
@@ -797,7 +805,7 @@ void ui_list_begin(UIListState *s, const UIListParams *p, int key)
         if (term_mouse.left || term_mouse.right || term_mouse.wheel != 0)
                 s->ignore_mouse = false;
 
-        if (key >= KEY_UP && key <= KEY_SHIFT_PAGE_DOWN)
+        if ((key >= KEY_UP && key <= KEY_SHIFT_PAGE_DOWN) || key == '\t' || key == ' ' || key == KEY_ENTER || key == KEY_BACKSPACE)
                 s->ignore_mouse = true;
 
         if (p->item_count > s->selections_cap)

@@ -62,18 +62,30 @@ void cb_undo_move(void *data)
         MoveAction *act = (MoveAction *)data;
         act->app->pop_count = 0;
         act->app->pop_anim = 1.0f;
-        act->app->pop_is_out = false;
+
+        char dir_old[PATH_MAX], dir_new[PATH_MAX];
+        strcpy(dir_old, act->moves[0].old_path);
+        char *slash_old = strrchr(dir_old, '/');
+        if (slash_old)
+                *slash_old = '\0';
+        strcpy(dir_new, act->moves[0].new_path);
+        char *slash_new = strrchr(dir_new, '/');
+        if (slash_new)
+                *slash_new = '\0';
+
+        act->app->pop_is_out = !strcmp(act->app->cwd, dir_new);
 
         for (int i = 0; i < act->count; i++)
         {
                 rename(act->moves[i].new_path, act->moves[i].old_path);
 
-                if (act->app->pop_count >= act->app->pop_cap)
+                if (act->app->pop_count + 2 > act->app->pop_cap)
                 {
                         act->app->pop_cap = act->app->pop_cap ? act->app->pop_cap * 2 : 64;
                         act->app->pop_paths = realloc(act->app->pop_paths, act->app->pop_cap * PATH_MAX) orelse return;
                 }
                 strcpy(act->app->pop_paths[act->app->pop_count++], act->moves[i].old_path);
+                strcpy(act->app->pop_paths[act->app->pop_count++], act->moves[i].new_path);
         }
 }
 
@@ -82,18 +94,30 @@ void cb_redo_move(void *data)
         MoveAction *act = (MoveAction *)data;
         act->app->pop_count = 0;
         act->app->pop_anim = 1.0f;
-        act->app->pop_is_out = true;
+
+        char dir_old[PATH_MAX], dir_new[PATH_MAX];
+        strcpy(dir_old, act->moves[0].old_path);
+        char *slash_old = strrchr(dir_old, '/');
+        if (slash_old)
+                *slash_old = '\0';
+        strcpy(dir_new, act->moves[0].new_path);
+        char *slash_new = strrchr(dir_new, '/');
+        if (slash_new)
+                *slash_new = '\0';
+
+        act->app->pop_is_out = !strcmp(act->app->cwd, dir_old);
 
         for (int i = 0; i < act->count; i++)
         {
                 rename(act->moves[i].old_path, act->moves[i].new_path);
 
-                if (act->app->pop_count >= act->app->pop_cap)
+                if (act->app->pop_count + 2 > act->app->pop_cap)
                 {
                         act->app->pop_cap = act->app->pop_cap ? act->app->pop_cap * 2 : 64;
                         act->app->pop_paths = realloc(act->app->pop_paths, act->app->pop_cap * PATH_MAX) orelse return;
                 }
                 strcpy(act->app->pop_paths[act->app->pop_count++], act->moves[i].new_path);
+                strcpy(act->app->pop_paths[act->app->pop_count++], act->moves[i].old_path);
         }
 }
 
@@ -666,7 +690,7 @@ void app_render_ui(AppState *app, UIListParams *params, int key)
         UIListState *s = &app->list;
         ui_list_begin(s, params, key);
 
-        int active_idx = s->selected_idx != -1 ? s->selected_idx : (app->last_hovered_idx == -1 ? 0 : app->last_hovered_idx);
+        int active_idx = (!s->ignore_mouse && app->last_hovered_idx != -1) ? app->last_hovered_idx : (s->selected_idx != -1 ? s->selected_idx : 0);
         UIRect active_r = ui_list_item_rect(s, active_idx);
 
         ui_list_tick_animations(s, active_r.x, active_r.y);
