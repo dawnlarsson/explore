@@ -26,6 +26,7 @@ typedef struct
         char name[256];
         bool is_dir, is_exec;
         off_t size;
+        char git_status[3];
 } FileEntry;
 
 typedef struct
@@ -74,6 +75,8 @@ struct AppState
 
         char trash_dir[PATH_MAX];
         int trash_counter;
+
+        char git_branch[64];
 };
 
 void rm_rf(const char *path)
@@ -450,7 +453,19 @@ void draw_item_grid(AppState *app, FileEntry *e, int x, int y, int w, int h, boo
                 item_bg.b = item_bg.b + flash > 255 ? 255 : item_bg.b + flash;
         }
 
-        Color icon_fg = is_ghost ? (is_sel ? (Color){200, 200, 200} : (Color){100, 100, 100}) : (e->is_dir ? clr_folder : (e->is_exec ? (Color){85, 255, 85} : clr_text));
+        // Safety check: ensure string exists before parsing index 1
+        bool has_git = (e->git_status[0] != '\0');
+        bool is_ignored = has_git && (e->git_status[0] == '!' && e->git_status[1] == '!');
+        bool is_untracked = has_git && (e->git_status[0] == '?' && e->git_status[1] == '?');
+        bool is_modified = has_git && (e->git_status[0] == 'M' || e->git_status[1] == 'M');
+        bool is_added = has_git && (e->git_status[0] == 'A' || e->git_status[1] == 'A');
+
+        Color base_text_clr = is_ignored ? (Color){100, 100, 100} : is_untracked ? (Color){85, 255, 255}
+                                                                : is_modified    ? (Color){255, 170, 85}
+                                                                : is_added       ? (Color){85, 255, 85}
+                                                                                 : clr_text;
+
+        Color icon_fg = is_ghost ? (is_sel ? (Color){200, 200, 200} : (Color){100, 100, 100}) : (is_ignored ? (Color){100, 100, 100} : (e->is_dir ? clr_folder : (e->is_exec ? (Color){85, 255, 85} : base_text_clr)));
 
         if (is_hover || is_sel || is_ghost || is_drop_target || is_multi_sel || is_popping)
                 ui_rect(x + 1, y, w - 2, h, item_bg);
@@ -494,9 +509,15 @@ void draw_item_grid(AppState *app, FileEntry *e, int x, int y, int w, int h, boo
                         l2[mw - 1] = '.';
                 }
         }
-        ui_text_centered(x + 1, y + 4 + y_off, mw, l1, is_ghost ? icon_fg : clr_text, item_bg, is_dropped, false);
+        ui_text_centered(x + 1, y + 4 + y_off, mw, l1, is_ghost ? icon_fg : base_text_clr, item_bg, is_dropped, false);
         if (l2[0])
-                ui_text_centered(x + 1, y + 5 + y_off, mw, l2, is_ghost ? icon_fg : clr_text, item_bg, is_dropped, false);
+                ui_text_centered(x + 1, y + 5 + y_off, mw, l2, is_ghost ? icon_fg : base_text_clr, item_bg, is_dropped, false);
+
+        if (has_git && !is_ignored)
+        {
+                char badge[3] = {e->git_status[1] == ' ' ? e->git_status[0] : e->git_status[1], '\0'};
+                ui_text(x + w - 3, y, badge, base_text_clr, item_bg, true, false);
+        }
 
         float scale = 1.0f;
         if (is_popping)
@@ -527,18 +548,35 @@ void draw_item_list(AppState *app, FileEntry *e, int x, int y, int w, int h, boo
                 item_bg.b = item_bg.b + flash > 255 ? 255 : item_bg.b + flash;
         }
 
-        Color icon_fg = is_ghost ? (is_sel ? (Color){200, 200, 200} : (Color){100, 100, 100}) : (e->is_dir ? clr_folder : (e->is_exec ? (Color){85, 255, 85} : clr_text));
+        bool has_git = (e->git_status[0] != '\0');
+        bool is_ignored = has_git && (e->git_status[0] == '!' && e->git_status[1] == '!');
+        bool is_untracked = has_git && (e->git_status[0] == '?' && e->git_status[1] == '?');
+        bool is_modified = has_git && (e->git_status[0] == 'M' || e->git_status[1] == 'M');
+        bool is_added = has_git && (e->git_status[0] == 'A' || e->git_status[1] == 'A');
+
+        Color base_text_clr = is_ignored ? (Color){100, 100, 100} : is_untracked ? (Color){85, 255, 255}
+                                                                : is_modified    ? (Color){255, 170, 85}
+                                                                : is_added       ? (Color){85, 255, 85}
+                                                                                 : clr_text;
+
+        Color icon_fg = is_ghost ? (is_sel ? (Color){200, 200, 200} : (Color){100, 100, 100}) : (is_ignored ? (Color){100, 100, 100} : (e->is_dir ? clr_folder : (e->is_exec ? (Color){85, 255, 85} : base_text_clr)));
 
         ui_rect(x, y, w, 1, item_bg);
 
         ui_text(x + 1, y, e->is_dir ? " ▓]" : " ■", icon_fg, item_bg, false, false);
+
+        if (has_git)
+        {
+                char badge[3] = {e->git_status[0] == ' ' ? '-' : e->git_status[0], e->git_status[1] == ' ' ? '-' : e->git_status[1], '\0'};
+                ui_text(x + 4, y, badge, base_text_clr, item_bg, false, false);
+        }
 
         raw char l[256];
         int copy_len = w - 9 > 255 ? 255 : (w - 9 < 0 ? 0 : w - 9);
         strncpy(l, e->name, copy_len);
         l[copy_len] = '\0';
 
-        ui_text(x + 8, y, l, is_ghost ? icon_fg : clr_text, item_bg, is_dropped, false);
+        ui_text(x + 7, y, l, is_ghost ? icon_fg : base_text_clr, item_bg, is_dropped, false);
 
         raw char size_str[32];
         if (!e->is_dir)
@@ -649,6 +687,10 @@ void app_load_dir(AppState *app, const char *path)
                 e->size = st.st_size;
                 e->is_dir = S_ISDIR(st.st_mode);
                 e->is_exec = (st.st_mode & S_IXUSR) && !e->is_dir;
+
+                e->git_status[0] = '\0';
+                e->git_status[1] = '\0';
+                e->git_status[2] = '\0';
         }
         qsort(app->entries, app->count, sizeof(FileEntry), cmp_entries);
 
@@ -687,9 +729,7 @@ void app_load_dir(AppState *app, const char *path)
         }
 
         if (dir_changed && app->count > 0)
-        {
                 app->list.selected_idx = 0;
-        }
         else if (app->count > 0 && sel[0])
         {
                 for (int i = 0; i < app->count; i++)
@@ -699,6 +739,66 @@ void app_load_dir(AppState *app, const char *path)
                                 app->list.selected_idx = i;
                                 break;
                         }
+                }
+        }
+
+        app->git_branch[0] = '\0';
+        FILE *f = popen("git branch --show-current 2>/dev/null", "r");
+        if (f)
+        {
+                if (fgets(app->git_branch, sizeof(app->git_branch), f))
+                {
+                        char *nl = strchr(app->git_branch, '\n');
+                        if (nl)
+                                *nl = '\0';
+                }
+                pclose(f);
+        }
+
+        if (app->git_branch[0] != '\0')
+        {
+                f = popen("git status -s --ignored . 2>/dev/null", "r");
+                if (f)
+                {
+                        char line[1024];
+                        while (fgets(line, sizeof(line), f))
+                        {
+                                if (strlen(line) < 4)
+                                        continue;
+                                char status[3] = {line[0], line[1], '\0'};
+
+                                char *p = line + 3;
+                                if (p[0] == '"')
+                                {
+                                        p++;
+                                        char *q = strrchr(p, '"');
+                                        if (q)
+                                                *q = '\0';
+                                }
+                                else
+                                {
+                                        char *nl = strchr(p, '\n');
+                                        if (nl)
+                                                *nl = '\0';
+                                }
+
+                                char *slash = strchr(p, '/');
+                                if (slash)
+                                        *slash = '\0';
+
+                                for (int i = 0; i < app->count; i++)
+                                {
+                                        if (strcmp(app->entries[i].name, p) == 0)
+                                        {
+                                                if (app->entries[i].git_status[0] == '\0' || status[0] == 'M' || status[1] == 'M')
+                                                {
+                                                        strcpy(app->entries[i].git_status, status);
+                                                }
+                                                break;
+                                        }
+                                }
+                        }
+                        pclose(f);
                 }
         }
 }
@@ -1304,8 +1404,11 @@ void app_render_ui(AppState *app, UIListParams *params, int key)
 
         ui_rect(0, 0, term_width, params->y, clr_bg);
         ui_rect(0, 0, term_width, 1, clr_bar);
-        raw char header[PATH_MAX + 20];
-        snprintf(header, sizeof(header), "%s ", app->cwd);
+        raw char header[PATH_MAX + 100];
+        if (app->git_branch[0])
+                snprintf(header, sizeof(header), "%s  [git: %s] ", app->cwd, app->git_branch);
+        else
+                snprintf(header, sizeof(header), "%s ", app->cwd);
         ui_text(1, 0, header, (Color){0}, clr_bar, false, false);
 
         ui_rect(0, term_height - 1, term_width, 1, clr_bar);
