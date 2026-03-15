@@ -128,8 +128,9 @@ float term_dt_scale = 1.0f;
 static struct termios orig_termios;
 static volatile int resize_flag = 1;
 static Cell *canvas, *last_canvas;
-static int fd_m = -1, raw_mx, raw_my, color_mode;
+static int fd_m = -1, fd_touch = -1, raw_mx, raw_my, color_mode;
 static bool is_evdev;
+static int touch_min_x, touch_max_x, touch_min_y, touch_max_y;
 static char out_buf[1024 * 1024];
 static UIContextState global_ctx;
 static int global_ctx_target = -1;
@@ -341,6 +342,8 @@ void term_restore(void)
         fflush(stdout);
         if (fd_m >= 0)
                 close(fd_m);
+        if (fd_touch >= 0)
+                close(fd_touch);
         free(canvas);
         free(last_canvas);
 }
@@ -388,6 +391,44 @@ int term_init(void)
                         close(fd);
                 }
         }
+
+        for (int i = 0; i < 32 && fd_touch < 0; i++)
+        {
+                raw char path[64];
+                snprintf(path, sizeof(path), "/dev/input/event%d", i);
+                int fd = open(path, O_RDONLY | O_NONBLOCK);
+                (fd >= 0) orelse continue;
+
+                raw unsigned long ev[EV_MAX / 8 + 1];
+                raw unsigned long abs_bits[ABS_MAX / 8 + 1];
+                memset(ev, 0, sizeof(ev));
+                memset(abs_bits, 0, sizeof(abs_bits));
+                ioctl(fd, EVIOCGBIT(0, sizeof(ev)), ev);
+                ioctl(fd, EVIOCGBIT(EV_ABS, sizeof(abs_bits)), abs_bits);
+
+                bool has_mt_x = (abs_bits[ABS_MT_POSITION_X / 8] & (1 << (ABS_MT_POSITION_X % 8))) != 0;
+                bool has_mt_y = (abs_bits[ABS_MT_POSITION_Y / 8] & (1 << (ABS_MT_POSITION_Y % 8))) != 0;
+                bool has_abs_x = (abs_bits[ABS_X / 8] & (1 << (ABS_X % 8))) != 0;
+                bool has_abs_y = (abs_bits[ABS_Y / 8] & (1 << (ABS_Y % 8))) != 0;
+
+                if ((has_mt_x && has_mt_y) || (has_abs_x && has_abs_y))
+                {
+                        raw struct input_absinfo ax, ay;
+                        int code_x = has_mt_x ? ABS_MT_POSITION_X : ABS_X;
+                        int code_y = has_mt_y ? ABS_MT_POSITION_Y : ABS_Y;
+                        ioctl(fd, EVIOCGABS(code_x), &ax);
+                        ioctl(fd, EVIOCGABS(code_y), &ay);
+                        fd_touch = fd;
+                        touch_min_x = ax.minimum;
+                        touch_max_x = ax.maximum;
+                        touch_min_y = ay.minimum;
+                        touch_max_y = ay.maximum;
+                }
+                else
+                {
+                        close(fd);
+                }
+        }
 #endif
         if (fd_m < 0)
                 fd_m = open("/dev/input/mice", O_RDONLY | O_NONBLOCK);
@@ -406,8 +447,14 @@ int term_init(void)
 
 int term_poll(int timeout_ms)
 {
-        struct pollfd fds[2] = {{STDIN_FILENO, POLLIN, 0}, {fd_m, POLLIN, 0}};
-        poll(fds, fd_m >= 0 ? 2 : 1, timeout_ms);
+        raw struct pollfd fds[3];
+        int nfds = 0;
+        fds[nfds++] = (struct pollfd){STDIN_FILENO, POLLIN, 0};
+        if (fd_m >= 0)
+                fds[nfds++] = (struct pollfd){fd_m, POLLIN, 0};
+        if (fd_touch >= 0)
+                fds[nfds++] = (struct pollfd){fd_touch, POLLIN, 0};
+        poll(fds, nfds, timeout_ms);
 
         if (resize_flag)
         {
@@ -473,6 +520,40 @@ int term_poll(int timeout_ms)
                 term_mouse.sub_y = (raw_my / 8) % 2;
                 term_mouse.has_sub = true;
         }
+
+#ifdef __linux__
+        if (fd_touch >= 0)
+        {
+                raw struct input_event ev;
+                while (read(fd_touch, &ev, sizeof(ev)) == sizeof(ev))
+                {
+                        term_mouse.hide_cursor = false;
+                        if (ev.type == EV_ABS)
+                        {
+                                if (ev.code == ABS_MT_POSITION_X || ev.code == ABS_X)
+                                {
+                                        int range = touch_max_x - touch_min_x;
+                                        if (range > 0)
+                                                raw_mx = (ev.value - touch_min_x) * (term_width * 8) / range;
+                                }
+                                if (ev.code == ABS_MT_POSITION_Y || ev.code == ABS_Y)
+                                {
+                                        int range = touch_max_y - touch_min_y;
+                                        if (range > 0)
+                                                raw_my = (ev.value - touch_min_y) * (term_height * 16) / range;
+                                }
+                        }
+                        if (ev.type == EV_KEY && ev.code == BTN_TOUCH)
+                                term_mouse.left = ev.value;
+                }
+                raw_mx = raw_mx < 0 ? 0 : (raw_mx >= term_width * 8 ? term_width * 8 - 1 : raw_mx);
+                raw_my = raw_my < 0 ? 0 : (raw_my >= term_height * 16 ? term_height * 16 - 1 : raw_my);
+                term_mouse.x = raw_mx / 8;
+                term_mouse.y = raw_my / 16;
+                term_mouse.sub_y = (raw_my / 8) % 2;
+                term_mouse.has_sub = true;
+        }
+#endif
 
         while (1)
         {
