@@ -504,7 +504,10 @@ void draw_item_grid(AppState *app, FileEntry *e, int x, int y, int w, int h, boo
         Color icon_fg = is_ghost ? (is_sel ? (Color){200, 200, 200} : (Color){100, 100, 100}) : (is_ignored ? (Color){100, 100, 100} : (e->is_dir ? clr_folder : (e->is_exec ? (Color){85, 255, 85} : base_text_clr)));
 
         if (is_hover || is_sel || is_ghost || is_drop_target || is_multi_sel || is_popping)
-                ui_rect(x + 1, y, w - 2, h, item_bg);
+        {
+                bool invert = is_hover || is_sel || is_multi_sel || is_pressed || is_ctx_target;
+                ui_rect(x + 1, y, w - 2, h, item_bg, invert && !is_ghost);
+        }
 
         char ext[5] = ".   ";
         if (!e->is_dir)
@@ -586,7 +589,10 @@ void draw_item_list(AppState *app, FileEntry *e, int x, int y, int w, int h, boo
 
         Color icon_fg = is_ghost ? (is_sel ? (Color){200, 200, 200} : (Color){100, 100, 100}) : (is_ignored ? (Color){100, 100, 100} : (e->is_dir ? clr_folder : (e->is_exec ? (Color){85, 255, 85} : base_text_clr)));
 
-        ui_rect(x, y, w, 1, item_bg);
+        {
+                bool invert = is_hover || is_sel || is_multi_sel || is_pressed || is_ctx_target;
+                ui_rect(x, y, w, 1, item_bg, invert && !is_ghost);
+        }
 
         ui_text(x, y, e->is_dir ? "▓]" : "■ ", icon_fg, item_bg, false, false);
 
@@ -1550,7 +1556,7 @@ void app_render_ui(AppState *app, UIListParams *params, int key)
         }
 
         int footer_y = params->y + params->h;
-        ui_rect(0, footer_y, params->w, 1, clr_bar);
+        ui_rect(0, footer_y, params->w, 1, clr_bar, false);
         ui_text(1, footer_y, s->carrying ? " Arrows | Enter: Drop | Esc: Cancel | Q: Quit " : " 1: View | Space: Sel | Tab: Move | Esc/Q: Quit ", (Color){0}, clr_bar, false, false);
 
         int target = ui_context_target();

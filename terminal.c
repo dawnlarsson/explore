@@ -722,7 +722,7 @@ void ui_begin(void)
 void ui_set_view(View *v) { active_view = v; }
 void ui_set_cursor(const char *cursor) { next_cursor = cursor; }
 void ui_suppress_mouse(bool suppress) { mouse_suppressed = suppress; }
-void ui_rect(int x, int y, int w, int h, Color bg);
+void ui_rect(int x, int y, int w, int h, Color bg, bool invert);
 Mouse ui_get_mouse(void)
 {
         Mouse m = term_mouse;
@@ -748,14 +748,14 @@ void ui_clear(Color bg)
 {
         if (active_view)
         {
-                ui_rect(0, 0, active_view->w, active_view->h, bg);
+                ui_rect(0, 0, active_view->w, active_view->h, bg, false);
                 return;
         }
         for (int i = 0; i < term_width * term_height; i++)
                 canvas[i] = (Cell){" ", bg, bg, false, false};
 }
 
-void ui_rect(int x, int y, int w, int h, Color bg)
+void ui_rect(int x, int y, int w, int h, Color bg, bool invert)
 {
         if (active_view)
         {
@@ -770,7 +770,7 @@ void ui_rect(int x, int y, int w, int h, Color bg)
                 {
                         if (c < 0 || c >= term_width || (active_view && (c < active_view->x || c >= active_view->x + active_view->w)))
                                 continue;
-                        canvas[r * term_width + c] = (Cell){" ", bg, bg, false, false};
+                        canvas[r * term_width + c] = (Cell){" ", bg, bg, false, invert};
                 }
         }
 }
@@ -836,7 +836,7 @@ UITabBarResult ui_tab_bar(int w, const UITab *tabs, int count, bool show_add, bo
         Color close_fg = (Color){180, 80, 80};
         Color add_fg = (Color){100, 200, 100};
 
-        ui_rect(0, 0, w, 1, bar_bg);
+        ui_rect(0, 0, w, 1, bar_bg, false);
 
         Mouse m = ui_get_mouse();
         int tx = 0;
@@ -862,7 +862,7 @@ UITabBarResult ui_tab_bar(int w, const UITab *tabs, int count, bool show_add, bo
                 Color tab_bg = tabs[i].active ? active_bg : inactive_bg;
                 Color tab_fg = tabs[i].active ? active_fg : inactive_fg;
 
-                ui_rect(tx, 0, tab_w, 1, tab_bg);
+                ui_rect(tx, 0, tab_w, 1, tab_bg, false);
                 ui_text(tx + 1, 0, label, tab_fg, tab_bg, tabs[i].active, false);
                 if (tabs[i].closable)
                         ui_text(tx + tab_w - 2, 0, "×", close_fg, tab_bg, false, false);
@@ -2214,7 +2214,7 @@ bool ui_context_do(void *id, const char **items, int count, int *out_idx)
                 }
         }
 
-        ui_rect(global_ctx.x, global_ctx.y, global_ctx.w, global_ctx.h, (Color){15, 15, 15});
+        ui_rect(global_ctx.x, global_ctx.y, global_ctx.w, global_ctx.h, (Color){15, 15, 15}, false);
         UIListParams params = {.x = global_ctx.x, .y = global_ctx.y, .w = global_ctx.w, .h = global_ctx.h, .item_count = count, .cell_w = global_ctx.w, .cell_h = 1, .bg = (Color){15, 15, 15}, .scrollbar_bg = (Color){25, 25, 25}, .scrollbar_fg = (Color){100, 100, 100}};
 
         ui_list_begin(&global_ctx.list, &params, 0);
@@ -2229,7 +2229,7 @@ bool ui_context_do(void *id, const char **items, int count, int *out_idx)
 
                 Color bg = item.pressed ? (Color){60, 60, 60} : (item.hovered || global_ctx.list.selected_idx == i) ? (Color){35, 35, 35}
                                                                                                                     : (Color){15, 15, 15};
-                ui_rect(item.x, item.y, item.w, item.h, bg);
+                ui_rect(item.x, item.y, item.w, item.h, bg, item.hovered || global_ctx.list.selected_idx == i);
                 ui_text(item.x + 1, item.y, items[i], (Color){255, 255, 255}, bg, false, false);
 
                 if (item.clicked)
@@ -2269,7 +2269,7 @@ bool ui_text_input(int x, int y, int w, char *buf, size_t buf_size, int key, boo
         }
 
         Color bg = active ? (Color){45, 45, 45} : (Color){20, 20, 20};
-        ui_rect(x, y, w, 1, bg);
+        ui_rect(x, y, w, 1, bg, false);
         raw char disp[256];
         snprintf(disp, sizeof(disp), "%s%s", buf, active ? "_" : "");
         ui_text(x + 1, y, disp, (Color){255, 255, 255}, bg, false, false);
