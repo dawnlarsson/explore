@@ -1362,6 +1362,17 @@ void app_process_drops(AppState *app)
         (s->action_drop_src != -1) orelse return;
 
         int src = s->action_drop_src, dst = s->action_drop_dst;
+        AppState *target_app = app;
+        if (src != -1 && dst == -1) {
+                for (int i = 0; i < MAX_TABS; i++) {
+                        if (tabs[i].in_use && tabs[i].app.list.drop_target_idx != -1) {
+                                dst = tabs[i].app.list.drop_target_idx;
+                                target_app = &tabs[i].app;
+                                break;
+                        }
+                }
+        }
+
         bool drag_multi = false;
 
         if (src >= 0 && s->selections[src])
@@ -1394,12 +1405,12 @@ void app_process_drops(AppState *app)
                 temp_carried_count++;
         }
 
-        bool dst_valid = (dst != -1 && app->entries[dst].is_dir && strcmp(app->entries[dst].name, "."));
+        bool dst_valid = (dst != -1 && target_app->entries[dst].is_dir && strcmp(target_app->entries[dst].name, "."));
         if (dst_valid)
         {
                 for (int i = 0; i < temp_carried_count; i++)
                 {
-                        if (dst == src || !strcmp(temp_carried[i].entry.name, app->entries[dst].name))
+                        if ((app == target_app && dst == src) || !strcmp(temp_carried[i].entry.name, target_app->entries[dst].name))
                         {
                                 dst_valid = false;
                                 break;
@@ -1413,7 +1424,7 @@ void app_process_drops(AppState *app)
                 return;
         }
 
-        UIRect r = ui_list_item_rect(s, dst);
+        UIRect r = ui_list_item_rect(&target_app->list, dst);
         s->drop_dst_x = r.x;
         s->drop_dst_y = r.y;
         s->drop_to_target = true;
@@ -1430,7 +1441,7 @@ void app_process_drops(AppState *app)
         for (int i = 0; i < temp_carried_count; i++)
         {
                 raw char new_path[PATH_MAX];
-                snprintf(new_path, PATH_MAX, "%s/%s/%s", app->cwd, app->entries[dst].name, temp_carried[i].entry.name);
+                snprintf(new_path, PATH_MAX, "%s/%s/%s", target_app->cwd, target_app->entries[dst].name, temp_carried[i].entry.name);
 
                 (move_path(temp_carried[i].path, new_path)) orelse continue;
 

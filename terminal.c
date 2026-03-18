@@ -1687,6 +1687,9 @@ void ui_list_begin(UIListState *s, const UIListParams *p, int key)
         if ((key >= KEY_UP && key <= KEY_SHIFT_PAGE_DOWN) || key == '\t' || key == ' ' || key == KEY_ENTER || key == KEY_BACKSPACE)
                 s->ignore_mouse = true;
 
+        if (s->external_drag)
+                s->ignore_mouse = false;
+
         if (p->item_count > s->selections_cap)
         {
                 s->selections = realloc(s->selections, p->item_count * sizeof(bool)) orelse { exit(1); };
