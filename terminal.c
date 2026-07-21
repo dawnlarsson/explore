@@ -31,10 +31,7 @@
 #define KEY_BACKSPACE 127
 #define KEY_CTRL_BACKSPACE 1011
 #define KEY_F1 1012
-
-#define KEY_SHIFT_PAGE_DOWN 1009
 #define KEY_DELETE 1010
-#define KEY_ENTER 10
 
 #define ANIM_SPEED_CARRY 0.4f
 #define ANIM_SPEED_DROP 0.10f
@@ -213,7 +210,7 @@ static const char *current_cursor = "text";
 static const char *next_cursor = "default";
 static bool mouse_suppressed = false;
 static Cell *canvas, *last_canvas;
-static int fd_m = -1, fd_touch = -1, raw_mx, raw_my, color_mode;
+static int fd_m = -1, fd_touch = -1, raw_mx, raw_my;
 static bool is_evdev;
 static int touch_min_x, touch_max_x, touch_min_y, touch_max_y;
 static char out_buf[1024 * 1024];
@@ -309,9 +306,14 @@ void ui_action_clear(void)
         global_history.head = global_history.count = 0;
 }
 
-static void on_resize(int s) { resize_flag = 1; }
+static void on_resize(int s)
+{
+        (void)s;
+        resize_flag = 1;
+}
 static void on_sigint(int s)
 {
+        (void)s;
         tcsetattr(STDIN_FILENO, TCSAFLUSH, &orig_termios);
         printf("\033%%@\033[0m\033[2J\033[H\033[?25h\033[?7h\033[?1006l\033[?1015l\033[?1003l");
         fflush(stdout);
@@ -339,29 +341,6 @@ static bool cell_eq(const Cell *a, const Cell *b)
         return strcmp(a->ch, b->ch) == 0;
 }
 
-static int rgb256(Color c) { return 16 + (36 * (c.r * 5 / 255)) + (6 * (c.g * 5 / 255)) + (c.b * 5 / 255); }
-static int rgb_to_ansi16(Color c, bool is_bg)
-{
-        int r = c.r > 127 ? 1 : 0, g = c.g > 127 ? 1 : 0, b = c.b > 127 ? 1 : 0;
-        int bright = (c.r > 170 || c.g > 170 || c.b > 170) ? 1 : 0;
-
-        if (!r && !g && !b && (c.r || c.g || c.b))
-        {
-                if (c.r == c.g && c.g == c.b)
-                {
-                        r = g = b = 0;
-                        bright = 1;
-                }
-                else if (c.r >= c.g && c.r >= c.b)
-                        r = 1;
-                else if (c.g >= c.r && c.g >= c.b)
-                        g = 1;
-                else
-                        b = 1;
-        }
-        return (is_bg ? (bright ? 100 : 40) : (bright ? 90 : 30)) + (r | (g << 1) | (b << 2));
-}
-
 #define SET_COL(fg, c) (c.r == -1 ? printf("\033[%d9m", fg ? 3 : 4) : printf("\033[%d;2;%d;%d;%dm", fg ? 38 : 48, c.r, c.g, c.b))
 
 void term_restore(void)
@@ -376,6 +355,7 @@ void term_restore(void)
                 close(fd_touch);
         free(canvas);
         free(last_canvas);
+        canvas = last_canvas = NULL;
 }
 
 int term_init(void)
@@ -393,11 +373,6 @@ int term_init(void)
         signal(SIGTERM, on_sigint);
         signal(SIGQUIT, on_sigint);
 
-        char *ct = getenv("COLORTERM");
-        char *term = getenv("TERM");
-        color_mode = (ct && (!strcmp(ct, "truecolor") || !strcmp(ct, "24bit"))) ? 2 : (term && strstr(term, "256color")) ? 1
-                                                                                                                         : 0;
-
 #ifdef __linux__
         for (int i = 0; i < 32 && fd_m < 0; i++)
         {
@@ -406,10 +381,13 @@ int term_init(void)
                 int fd = open(path, O_RDONLY | O_NONBLOCK);
                 (fd >= 0) orelse continue;
 
-                raw unsigned long ev[EV_MAX / 8 + 1];
-                raw unsigned long rel[REL_MAX / 8 + 1];
-                ioctl(fd, EVIOCGBIT(0, sizeof(ev)), ev);
-                ioctl(fd, EVIOCGBIT(EV_REL, sizeof(rel)), rel);
+                unsigned long ev[EV_MAX / 8 + 1];
+                unsigned long rel[REL_MAX / 8 + 1];
+                if (ioctl(fd, EVIOCGBIT(0, sizeof(ev)), ev) < 0 || ioctl(fd, EVIOCGBIT(EV_REL, sizeof(rel)), rel) < 0)
+                {
+                        close(fd);
+                        continue;
+                }
 
                 if ((ev[EV_REL / 8] & (1 << (EV_REL % 8))) && (rel[REL_X / 8] & (1 << (REL_X % 8))) && (rel[REL_Y / 8] & (1 << (REL_Y % 8))))
                 {
@@ -429,12 +407,13 @@ int term_init(void)
                 int fd = open(path, O_RDONLY | O_NONBLOCK);
                 (fd >= 0) orelse continue;
 
-                raw unsigned long ev[EV_MAX / 8 + 1];
-                raw unsigned long abs_bits[ABS_MAX / 8 + 1];
-                memset(ev, 0, sizeof(ev));
-                memset(abs_bits, 0, sizeof(abs_bits));
-                ioctl(fd, EVIOCGBIT(0, sizeof(ev)), ev);
-                ioctl(fd, EVIOCGBIT(EV_ABS, sizeof(abs_bits)), abs_bits);
+                unsigned long ev[EV_MAX / 8 + 1];
+                unsigned long abs_bits[ABS_MAX / 8 + 1];
+                if (ioctl(fd, EVIOCGBIT(0, sizeof(ev)), ev) < 0 || ioctl(fd, EVIOCGBIT(EV_ABS, sizeof(abs_bits)), abs_bits) < 0)
+                {
+                        close(fd);
+                        continue;
+                }
 
                 bool has_mt_x = (abs_bits[ABS_MT_POSITION_X / 8] & (1 << (ABS_MT_POSITION_X % 8))) != 0;
                 bool has_mt_y = (abs_bits[ABS_MT_POSITION_Y / 8] & (1 << (ABS_MT_POSITION_Y % 8))) != 0;
@@ -588,8 +567,9 @@ int term_poll(int timeout_ms)
         while (1)
         {
                 raw char buf[4096];
-                int n = read(STDIN_FILENO, buf, sizeof(buf));
+                int n = read(STDIN_FILENO, buf, sizeof(buf) - 1);
                 (n > 0) orelse break;
+                buf[n] = '\0'; // sscanf below needs a NUL-terminated string
 
                 for (int i = 0; i < n; i++)
                 {
@@ -615,7 +595,7 @@ int term_poll(int timeout_ms)
                                                 term_mouse.wheel--;
                                         if (btn == 65 && d)
                                                 term_mouse.wheel++;
-                                        i += 3 + offset;
+                                        i += 2 + offset; // +1 more comes from the loop increment
                                         continue;
                                 }
                                 else if (i + 5 < n && buf[i + 5] == '~' && buf[i + 3] == ';' && buf[i + 4] == '5')
@@ -662,13 +642,11 @@ int term_poll(int timeout_ms)
                                         key = (buf[i + 2] == 'F') ? KEY_END : (buf[i + 2] == 'H') ? KEY_HOME
                                                                           : (buf[i + 2] == 'P')   ? KEY_F1
                                                                                                   : 0;
-                                        if (key)
-                                        {
-                                                i += 2;
-                                                continue;
-                                        }
+                                        // Unknown SS3: swallow it instead of leaking a spurious ESC keypress
+                                        i += 2;
+                                        continue;
                                 }
-                                else if (i + 2 < n)
+                                else if (i + 2 < n && buf[i + 1] == '[')
                                 {
                                         char c = buf[i + 2];
                                         key = (c == 'A') ? KEY_UP : (c == 'B') ? KEY_DOWN
@@ -677,11 +655,9 @@ int term_poll(int timeout_ms)
                                                                 : (c == 'F')   ? KEY_END
                                                                 : (c == 'H')   ? KEY_HOME
                                                                                : 0;
-                                        if (key)
-                                        {
-                                                i += 2;
-                                                continue;
-                                        }
+                                        // Unknown CSI: swallow it instead of leaking a spurious ESC keypress
+                                        i += 2;
+                                        continue;
                                 }
                         }
                         if (!key)
@@ -714,8 +690,17 @@ void ui_begin(void)
         static int cw, ch;
         if (term_width != cw || term_height != ch)
         {
-                canvas = realloc(canvas, term_width * term_height * sizeof(Cell)) orelse { exit(1); };
-                last_canvas = realloc(last_canvas, term_width * term_height * sizeof(Cell)) orelse { exit(1); };
+                Cell *nc = realloc(canvas, term_width * term_height * sizeof(Cell));
+                Cell *nl = realloc(last_canvas, term_width * term_height * sizeof(Cell));
+                if (nc)
+                        canvas = nc;
+                if (nl)
+                        last_canvas = nl;
+                if (!nc || !nl)
+                {
+                        term_restore();
+                        exit(1);
+                }
                 memset(last_canvas, 0, term_width * term_height * sizeof(Cell));
                 printf("\033[2J\033[H");
                 fflush(stdout);
@@ -934,7 +919,7 @@ UISplitterLayout ui_splitter_h(float *frac, bool *dragging, int x, int y, int w,
         if (*dragging)
         {
                 ui_set_cursor("ew-resize");
-                float f = (float)(term_mouse.x - x) / w;
+                float f = w > 0 ? (float)(term_mouse.x - x) / w : min_frac;
                 if (f < min_frac)
                         f = min_frac;
                 if (f > max_frac)
@@ -984,7 +969,7 @@ UISplitterLayout ui_splitter_v(float *frac, bool *dragging, int x, int y, int w,
         if (*dragging)
         {
                 ui_set_cursor("ns-resize");
-                float f = (float)(term_mouse.y - y) / h;
+                float f = h > 0 ? (float)(term_mouse.y - y) / h : min_frac;
                 if (f < min_frac)
                         f = min_frac;
                 if (f > max_frac)
@@ -1266,6 +1251,10 @@ static View ui_dock_preview_rect_for_drop(const UIDockState *dock, int target_le
                 return (View){view.x, view.y, view.w / 2, view.h};
         if (kind == UI_DOCK_DROP_SPLIT_RIGHT)
                 return (View){view.x + view.w / 2, view.y, view.w - view.w / 2, view.h};
+        if (kind == UI_DOCK_DROP_SPLIT_UP)
+                return (View){view.x, view.y, view.w, view.h / 2};
+        if (kind == UI_DOCK_DROP_SPLIT_DOWN)
+                return (View){view.x, view.y + view.h / 2, view.w, view.h - view.h / 2};
         return empty;
 }
 
@@ -1273,7 +1262,6 @@ int ui_dock_leaf_count(const UIDockState *dock)
 {
         int leaves[UI_DOCK_MAX_NODES];
         int count = 0;
-        memset(leaves, 0, sizeof(leaves));
         if (dock)
                 ui_dock_collect_leaves(dock, dock->root, leaves, &count, UI_DOCK_MAX_NODES);
         return count;
@@ -1283,7 +1271,6 @@ int ui_dock_leaf_nth(const UIDockState *dock, int n)
 {
         int leaves[UI_DOCK_MAX_NODES];
         int count = 0;
-        memset(leaves, 0, sizeof(leaves));
         if (!dock)
                 return -1;
         ui_dock_collect_leaves(dock, dock->root, leaves, &count, UI_DOCK_MAX_NODES);
@@ -1337,7 +1324,7 @@ int ui_dock_split_leaf(UIDockState *dock, int leaf_idx, bool new_leaf_before, bo
         int old_parent = leaf->parent;
 
         UIDockNode *parent = &dock->nodes[parent_idx];
-        parent->kind = UI_DOCK_NODE_SPLIT_H;
+        parent->kind = split_vertical ? UI_DOCK_NODE_SPLIT_V : UI_DOCK_NODE_SPLIT_H;
         parent->parent = old_parent;
         parent->view = leaf->view;
         parent->split_frac = 0.5f;
@@ -1383,7 +1370,7 @@ bool ui_dock_is_animating(const UIDockState *dock)
                 return true;
 
         for (int i = 0; i < UI_DOCK_MAX_NODES; i++)
-                if (dock->nodes[i].in_use && dock->nodes[i].kind == UI_DOCK_NODE_SPLIT_H && dock->nodes[i].dragging_splitter)
+                if (dock->nodes[i].in_use && dock->nodes[i].kind != UI_DOCK_NODE_LEAF && dock->nodes[i].dragging_splitter)
                         return true;
         return false;
 }
@@ -1400,11 +1387,6 @@ void ui_dock_begin_frame(UIDockState *dock, int x, int y, int w, int h)
 
         if (!ui_dock_is_leaf_node(dock, dock->active_leaf))
                 dock->active_leaf = ui_dock_first_leaf_from(dock, dock->root);
-
-        static int last_mx = -1, last_my = -1;
-        bool mouse_moved = (term_mouse.x != last_mx || term_mouse.y != last_my);
-        last_mx = term_mouse.x;
-        last_my = term_mouse.y;
 
         if (term_mouse.clicked || term_mouse.right_clicked || term_mouse.wheel != 0)
         {
@@ -1461,7 +1443,6 @@ void ui_dock_draw(UIDockState *dock, const UITab *tabs, int tab_count, Color bar
         }
         else if (dock->switch_flash > 0.0f)
         {
-                extern float term_dt_scale;
                 dock->switch_flash -= 0.1f * term_dt_scale;
                 if (dock->switch_flash < 0.0f)
                         dock->switch_flash = 0.0f;
@@ -1773,8 +1754,17 @@ void ui_list_begin(UIListState *s, const UIListParams *p, int key)
 
         if (p->item_count > s->selections_cap)
         {
-                s->selections = realloc(s->selections, p->item_count * sizeof(bool)) orelse { exit(1); };
-                s->active_box_selections = realloc(s->active_box_selections, p->item_count * sizeof(bool)) orelse { exit(1); };
+                bool *ns = realloc(s->selections, p->item_count * sizeof(bool));
+                bool *nb = realloc(s->active_box_selections, p->item_count * sizeof(bool));
+                if (ns)
+                        s->selections = ns;
+                if (nb)
+                        s->active_box_selections = nb;
+                if (!ns || !nb)
+                {
+                        term_restore();
+                        exit(1);
+                }
                 memset(s->selections + s->selections_cap, 0, (p->item_count - s->selections_cap) * sizeof(bool));
                 memset(s->active_box_selections + s->selections_cap, 0, (p->item_count - s->selections_cap) * sizeof(bool));
                 s->selections_cap = p->item_count;
@@ -2241,8 +2231,13 @@ bool ui_list_get_fly_coords(UIListState *s, int *out_x, int *out_y)
 
 void ui_context_open(void *id, int target_idx)
 {
-        global_ctx = (UIContextState){.active = true, .id = id, .x = ui_get_mouse().x, .y = ui_get_mouse().y, .w = 0};
-        global_ctx.list.selected_idx = -1;
+        // Preserve the list's heap allocations across reopen (plain assignment would leak them)
+        ui_list_reset(&global_ctx.list);
+        global_ctx.active = true;
+        global_ctx.id = id;
+        global_ctx.x = ui_get_mouse().x;
+        global_ctx.y = ui_get_mouse().y;
+        global_ctx.w = 0;
         global_ctx.list.mode = UI_MODE_LIST;
         global_ctx_target = target_idx;
         term_mouse.right_clicked = false;
@@ -2309,7 +2304,8 @@ bool ui_context_do(void *id, const char **items, int count, int *out_idx)
         for (int i = 0; i < count; i++)
         {
                 UIItemResult item;
-                (ui_list_do_item(&global_ctx.list, i, &item)) orelse continue;
+                if (!ui_list_do_item(&global_ctx.list, i, &item))
+                        continue;
 
                 Color bg = item.pressed ? (Color){60, 60, 60} : (item.hovered || global_ctx.list.selected_idx == i) ? (Color){35, 35, 35}
                                                                                                                     : (Color){15, 15, 15};

@@ -97,6 +97,20 @@ extern AppTab tabs[MAX_TABS];
 extern UIDockState dock;
 int add_tab(const char *dir);
 
+// Growable-array helper: keeps the old block (and old capacity) intact on OOM.
+static bool grow_array(void **ptr, int *cap, int need, size_t elem)
+{
+        if (need <= *cap)
+                return true;
+        int new_cap = *cap ? *cap : 64;
+        while (new_cap < need)
+                new_cap *= 2;
+        void *np = realloc(*ptr, (size_t)new_cap * elem) orelse return false;
+        *ptr = np;
+        *cap = new_cap;
+        return true;
+}
+
 void get_dir_mtime(const char *path, long long *sec, long long *ns)
 {
         struct stat st;
@@ -119,13 +133,16 @@ void get_dir_mtime(const char *path, long long *sec, long long *ns)
 void rm_rf(const char *path)
 {
         struct stat st;
-        if (stat(path, &st) != 0)
+        // lstat, not stat: a symlink to a directory must be unlinked itself,
+        // never followed into (would delete the link target's contents!)
+        if (lstat(path, &st) != 0)
                 return;
         if (S_ISDIR(st.st_mode))
         {
                 DIR *d = opendir(path);
                 if (d)
                 {
+                        defer closedir(d);
                         struct dirent *dir;
                         while ((dir = readdir(d)) != NULL)
                         {
@@ -135,7 +152,6 @@ void rm_rf(const char *path)
                                 snprintf(sub, PATH_MAX, "%s/%s", path, dir->d_name);
                                 rm_rf(sub);
                         }
-                        closedir(d);
                 }
                 rmdir(path);
         }
@@ -175,21 +191,15 @@ bool copy_path(const char *src, const char *dst)
         }
         else
         {
-                FILE *fs = fopen(src, "rb");
-                if (!fs)
-                        return false;
-                FILE *fd = fopen(dst, "wb");
-                if (!fd)
-                {
-                        fclose(fs);
-                        return false;
-                }
-                char buf[8192];
+                FILE *fs = fopen(src, "rb") orelse return false;
+                defer fclose(fs);
+                FILE *fd = fopen(dst, "wb") orelse return false;
+                defer fclose(fd);
+
+                raw char buf[8192];
                 size_t n;
                 while ((n = fread(buf, 1, sizeof(buf), fs)) > 0)
                         fwrite(buf, 1, n, fd);
-                fclose(fs);
-                fclose(fd);
                 chmod(dst, st.st_mode);
                 return true;
         }
@@ -229,11 +239,7 @@ void cb_undo_move(void *data)
         {
                 move_path(act->moves[i].new_path, act->moves[i].old_path);
 
-                if (act->app->pop_count + 2 > act->app->pop_cap)
-                {
-                        act->app->pop_cap = act->app->pop_cap ? act->app->pop_cap * 2 : 64;
-                        act->app->pop_paths = realloc(act->app->pop_paths, act->app->pop_cap * PATH_MAX) orelse return;
-                }
+                grow_array((void **)&act->app->pop_paths, &act->app->pop_cap, act->app->pop_count + 2, PATH_MAX) orelse return;
                 strcpy(act->app->pop_paths[act->app->pop_count++], act->moves[i].old_path);
                 strcpy(act->app->pop_paths[act->app->pop_count++], act->moves[i].new_path);
         }
@@ -261,11 +267,7 @@ void cb_redo_move(void *data)
         {
                 move_path(act->moves[i].old_path, act->moves[i].new_path);
 
-                if (act->app->pop_count + 2 > act->app->pop_cap)
-                {
-                        act->app->pop_cap = act->app->pop_cap ? act->app->pop_cap * 2 : 64;
-                        act->app->pop_paths = realloc(act->app->pop_paths, act->app->pop_cap * PATH_MAX) orelse return;
-                }
+                grow_array((void **)&act->app->pop_paths, &act->app->pop_cap, act->app->pop_count + 2, PATH_MAX) orelse return;
                 strcpy(act->app->pop_paths[act->app->pop_count++], act->moves[i].new_path);
                 strcpy(act->app->pop_paths[act->app->pop_count++], act->moves[i].old_path);
         }
@@ -294,11 +296,7 @@ void cb_undo_copy(void *data)
         for (int i = 0; i < act->count; i++)
         {
                 rm_rf(act->moves[i].dst_path);
-                if (act->app->pop_count + 1 > act->app->pop_cap)
-                {
-                        act->app->pop_cap = act->app->pop_cap ? act->app->pop_cap * 2 : 64;
-                        act->app->pop_paths = realloc(act->app->pop_paths, act->app->pop_cap * PATH_MAX) orelse return;
-                }
+                grow_array((void **)&act->app->pop_paths, &act->app->pop_cap, act->app->pop_count + 1, PATH_MAX) orelse return;
                 strcpy(act->app->pop_paths[act->app->pop_count++], act->moves[i].dst_path);
         }
 }
@@ -319,11 +317,7 @@ void cb_redo_copy(void *data)
         for (int i = 0; i < act->count; i++)
         {
                 copy_path(act->moves[i].src_path, act->moves[i].dst_path);
-                if (act->app->pop_count + 1 > act->app->pop_cap)
-                {
-                        act->app->pop_cap = act->app->pop_cap ? act->app->pop_cap * 2 : 64;
-                        act->app->pop_paths = realloc(act->app->pop_paths, act->app->pop_cap * PATH_MAX) orelse return;
-                }
+                grow_array((void **)&act->app->pop_paths, &act->app->pop_cap, act->app->pop_count + 1, PATH_MAX) orelse return;
                 strcpy(act->app->pop_paths[act->app->pop_count++], act->moves[i].dst_path);
         }
 }
@@ -405,14 +399,8 @@ void app_do_delete(AppState *app, int target_idx)
                                         strcpy(act->moves[act->count].new_path, dst_path);
                                         act->count++;
 
-                                        if (app->pop_count + 1 > app->pop_cap)
-                                        {
-                                                app->pop_cap = app->pop_cap ? app->pop_cap * 2 : 64;
-                                                app->pop_paths = realloc(app->pop_paths, app->pop_cap * PATH_MAX) orelse continue;
-                                        }
+                                        grow_array((void **)&app->pop_paths, &app->pop_cap, app->pop_count + 1, PATH_MAX) orelse continue;
                                         strcpy(app->pop_paths[app->pop_count++], src_path);
-
-                                        UIRect r = ui_list_item_rect(s, i);
                                 }
                         }
                 }
@@ -520,10 +508,11 @@ void draw_item_grid(AppState *app, FileEntry *e, int x, int y, int w, int h, boo
                                 ext[1 + j] = toupper(dot[1 + j]);
         }
 
-        const char *icon_dir[] = {" ┌─┐____ ", " │ └────│ ", " │      │ ", " └──────┘ "};
-        const char *icon_file[] = {"  ┌──┐_ ", "  │  └─│", "  │    │", "  └────┘"};
-        const char *icon_exec[] = {"  ┌──┐_ ", "  │░░└─│", "  │░░░░│", "  └────┘"};
-        const char **icon = e->is_dir ? icon_dir : (e->is_exec ? icon_exec : icon_file);
+        // const-qualified arrays of literals: Prism's auto-static promotes them to .rodata
+        const char *const icon_dir[] = {" ┌─┐____ ", " │ └────│ ", " │      │ ", " └──────┘ "};
+        const char *const icon_file[] = {"  ┌──┐_ ", "  │  └─│", "  │    │", "  └────┘"};
+        const char *const icon_exec[] = {"  ┌──┐_ ", "  │░░└─│", "  │░░░░│", "  └────┘"};
+        const char *const *icon = e->is_dir ? icon_dir : (e->is_exec ? icon_exec : icon_file);
 
         int y_off = (is_hover && ui_get_mouse().left && !app->list.is_dragging) ? 1 : 0;
         for (int j = 0; j < 4; j++)
@@ -544,7 +533,7 @@ void draw_item_grid(AppState *app, FileEntry *e, int x, int y, int w, int h, boo
         {
                 strncpy(l2, e->name + mw, mw);
                 l2[mw] = '\0';
-                if (len > mw * 2)
+                if (len > mw * 2 && mw >= 2)
                 {
                         l2[mw - 2] = '.';
                         l2[mw - 1] = '.';
@@ -607,7 +596,7 @@ void draw_item_list(AppState *app, FileEntry *e, int x, int y, int w, int h, boo
         }
 
         int right_margin = (!e->is_dir) ? 8 : 1;
-        int max_name_len = w - name_x - right_margin;
+        int max_name_len = w - (name_x - x) - right_margin;
         if (max_name_len < 0)
                 max_name_len = 0;
         int copy_len = max_name_len > 255 ? 255 : max_name_len;
@@ -713,22 +702,21 @@ void app_load_dir(AppState *app, const char *path)
         getcwd(app->cwd, sizeof(app->cwd)) orelse return;
         get_dir_mtime(".", &app->last_mtime, &app->last_mtime_ns);
 
-        char sel[256] = "";
-        if (app->count > 0 && app->list.selected_idx >= 0)
+        char sel[256];
+        if (app->count > 0 && app->list.selected_idx >= 0 && app->list.selected_idx < app->count)
                 strcpy(sel, app->entries[app->list.selected_idx].name);
 
         int saved_sel_count = 0;
         raw char (*saved_sels)[256] = NULL;
         if (app->count > 0 && app->list.selections)
-        {
                 saved_sels = malloc(app->count * 256);
-                if (saved_sels)
+        defer free(saved_sels); // free(NULL) is a no-op; runs at function exit
+        if (saved_sels)
+        {
+                for (int i = 0; i < app->count; i++)
                 {
-                        for (int i = 0; i < app->count; i++)
-                        {
-                                if (app->list.selections[i])
-                                        strcpy(saved_sels[saved_sel_count++], app->entries[i].name);
-                        }
+                        if (app->list.selections[i])
+                                strcpy(saved_sels[saved_sel_count++], app->entries[i].name);
                 }
         }
 
@@ -761,18 +749,13 @@ void app_load_dir(AppState *app, const char *path)
                 if (!strcmp(dir->d_name, "."))
                         continue;
                 if (!strcmp(dir->d_name, ".."))
-                        has_dot_dot = true;
-
-                if (app->count >= app->capacity)
                 {
-                        app->capacity = app->capacity ? app->capacity * 2 : 256;
-                        app->entries = realloc(app->entries, app->capacity * sizeof(FileEntry));
-                        if (!app->entries)
-                                break;
+                        has_dot_dot = true;
                 }
 
-                raw struct stat st;
-                memset(&st, 0, sizeof(st));
+                grow_array((void **)&app->entries, &app->capacity, app->count + 1, sizeof(FileEntry)) orelse break;
+
+                struct stat st;
                 if (stat(dir->d_name, &st))
                 {
                         if (lstat(dir->d_name, &st))
@@ -797,12 +780,8 @@ void app_load_dir(AppState *app, const char *path)
 
         if (!has_dot_dot && strcmp(app->cwd, "/") != 0)
         {
-                if (app->count >= app->capacity)
-                {
-                        app->capacity = app->capacity ? app->capacity * 2 : 256;
-                        app->entries = realloc(app->entries, app->capacity * sizeof(FileEntry));
-                }
-                if (app->entries)
+                grow_array((void **)&app->entries, &app->capacity, app->count + 1, sizeof(FileEntry));
+                if (app->entries && app->count < app->capacity)
                 {
                         FileEntry *e = &app->entries[app->count++];
                         strcpy(e->name, "..");
@@ -832,9 +811,6 @@ void app_load_dir(AppState *app, const char *path)
                         }
                 }
         }
-        if (saved_sels)
-                free(saved_sels);
-
         if (!dir_changed && app->list.drop_anim > 0.0f)
         {
                 for (int i = 0; i < app->count; i++)
@@ -867,17 +843,21 @@ void app_load_dir(AppState *app, const char *path)
                 }
         }
 
+        // The previously selected entry may be gone: keep the index in bounds
+        if (app->list.selected_idx >= app->count)
+                app->list.selected_idx = app->count - 1;
+
         app->git_branch[0] = '\0';
         FILE *f = popen("git branch --show-current 2>/dev/null", "r");
         if (f)
         {
+                defer pclose(f);
                 if (fgets(app->git_branch, sizeof(app->git_branch), f))
                 {
                         char *nl = strchr(app->git_branch, '\n');
                         if (nl)
                                 *nl = '\0';
                 }
-                pclose(f);
         }
 
         if (app->git_branch[0] != '\0')
@@ -885,7 +865,8 @@ void app_load_dir(AppState *app, const char *path)
                 f = popen("git --no-optional-locks status -s . 2>/dev/null", "r");
                 if (f)
                 {
-                        char line[1024];
+                        defer pclose(f);
+                        raw char line[1024];
                         while (fgets(line, sizeof(line), f))
                         {
                                 if (strlen(line) < 4)
@@ -923,7 +904,6 @@ void app_load_dir(AppState *app, const char *path)
                                         }
                                 }
                         }
-                        pclose(f);
                 }
         }
 }
@@ -1021,7 +1001,7 @@ void handle_input(AppState *app, int *key, const UIListParams *params)
                                                 base_name[255] = '\0';
 
                                                 char *dot = strrchr(base_name, '.');
-                                                char ext[256] = "";
+                                                char ext[256];
                                                 if (dot && dot != base_name)
                                                 {
                                                         strcpy(ext, dot);
@@ -1048,11 +1028,7 @@ void handle_input(AppState *app, int *key, const UIListParams *params)
                                                         strcpy(act->moves[act->count].dst_path, dst_path);
                                                         act->count++;
 
-                                                        if (app->pop_count + 1 > app->pop_cap)
-                                                        {
-                                                                app->pop_cap = app->pop_cap ? app->pop_cap * 2 : 64;
-                                                                app->pop_paths = realloc(app->pop_paths, app->pop_cap * PATH_MAX) orelse continue;
-                                                        }
+                                                        grow_array((void **)&app->pop_paths, &app->pop_cap, app->pop_count + 1, PATH_MAX) orelse continue;
                                                         strcpy(app->pop_paths[app->pop_count++], dst_path);
                                                 }
                                         }
@@ -1086,11 +1062,7 @@ void handle_input(AppState *app, int *key, const UIListParams *params)
                         {
                                 if (strcmp(app->entries[i].name, "..") != 0)
                                 {
-                                        if (global_clipboard_count >= global_clipboard_cap)
-                                        {
-                                                global_clipboard_cap = global_clipboard_cap ? global_clipboard_cap * 2 : 256;
-                                                global_clipboard = realloc(global_clipboard, global_clipboard_cap * PATH_MAX) orelse break;
-                                        }
+                                        grow_array((void **)&global_clipboard, &global_clipboard_cap, global_clipboard_count + 1, PATH_MAX) orelse break;
                                         snprintf(global_clipboard[global_clipboard_count++], PATH_MAX, "%s/%s", app->cwd, app->entries[i].name);
                                 }
                         }
@@ -1127,7 +1099,7 @@ void handle_input(AppState *app, int *key, const UIListParams *params)
                                 base_name[255] = '\0';
 
                                 char *dot = strrchr(base_name, '.');
-                                char ext[256] = "";
+                                char ext[256];
 
                                 if (dot && dot != base_name)
                                 {
@@ -1155,11 +1127,7 @@ void handle_input(AppState *app, int *key, const UIListParams *params)
                                         strcpy(act->moves[act->count].dst_path, dst_path);
                                         act->count++;
 
-                                        if (app->pop_count + 1 > app->pop_cap)
-                                        {
-                                                app->pop_cap = app->pop_cap ? app->pop_cap * 2 : 64;
-                                                app->pop_paths = realloc(app->pop_paths, app->pop_cap * PATH_MAX) orelse continue;
-                                        }
+                                        grow_array((void **)&app->pop_paths, &app->pop_cap, app->pop_count + 1, PATH_MAX) orelse continue;
                                         strcpy(app->pop_paths[app->pop_count++], dst_path);
                                 }
                         }
@@ -1242,15 +1210,11 @@ void handle_input(AppState *app, int *key, const UIListParams *params)
                         }
                         else
                         {
-                                if (app->carried_count >= app->carried_cap)
+                                grow_array((void **)&app->carried, &app->carried_cap, app->carried_count + 1, sizeof(CarriedFile)) orelse
                                 {
-                                        app->carried_cap = app->carried_cap ? app->carried_cap * 2 : 256;
-                                        app->carried = realloc(app->carried, app->carried_cap * sizeof(CarriedFile)) orelse
-                                        {
-                                                *key = 0;
-                                                return;
-                                        };
-                                }
+                                        *key = 0;
+                                        return;
+                                };
                                 s->fly_is_pickup = true;
                                 app->carried[app->carried_count].entry = app->entries[src];
                                 strcpy(app->carried[app->carried_count++].path, src_path);
@@ -1292,11 +1256,7 @@ void handle_input(AppState *app, int *key, const UIListParams *params)
                                 strcpy(act->moves[act->count].new_path, new_path);
                                 act->count++;
 
-                                if (app->drop_count >= app->drop_cap)
-                                {
-                                        app->drop_cap = app->drop_cap ? app->drop_cap * 2 : 64;
-                                        app->drop_paths = realloc(app->drop_paths, app->drop_cap * PATH_MAX) orelse continue;
-                                }
+                                grow_array((void **)&app->drop_paths, &app->drop_cap, app->drop_count + 1, PATH_MAX) orelse continue;
                                 strcpy(app->drop_paths[app->drop_count++], new_path);
                         }
 
@@ -1323,11 +1283,7 @@ void handle_input(AppState *app, int *key, const UIListParams *params)
                                 {
                                         if (strcmp(app->entries[i].name, "..") != 0)
                                         {
-                                                if (app->carried_count >= app->carried_cap)
-                                                {
-                                                        app->carried_cap = app->carried_cap ? app->carried_cap * 2 : 256;
-                                                        app->carried = realloc(app->carried, app->carried_cap * sizeof(CarriedFile)) orelse break;
-                                                }
+                                                grow_array((void **)&app->carried, &app->carried_cap, app->carried_count + 1, sizeof(CarriedFile)) orelse break;
                                                 app->carried[app->carried_count].entry = app->entries[i];
                                                 snprintf(app->carried[app->carried_count++].path, PATH_MAX, "%s/%s", app->cwd, app->entries[i].name);
                                         }
@@ -1337,17 +1293,6 @@ void handle_input(AppState *app, int *key, const UIListParams *params)
                         {
                                 s->carrying = true;
                                 s->pickup_anim = 1.0f;
-
-                                for (int i = 0; i < app->count; i++)
-                                {
-                                        if ((drag_multi && s->selections[i]) || (!drag_multi && i == src))
-                                        {
-                                                if (strcmp(app->entries[i].name, "..") != 0)
-                                                {
-                                                        UIRect br = ui_list_item_rect(s, i);
-                                                }
-                                        }
-                                }
                         }
                 }
                 *key = 0;
@@ -1359,9 +1304,12 @@ void app_process_drops(AppState *app)
         UIListState *s = &app->list;
 
         if (s->action_click_idx != -1 && app->entries[s->action_click_idx].is_dir)
+        {
                 strcpy(app->next_dir, app->entries[s->action_click_idx].name);
+        }
 
-        (s->action_drop_src != -1) orelse return;
+        if (s->action_drop_src == -1)
+                return;
 
         int src = s->action_drop_src, dst = s->action_drop_dst;
         AppState *target_app = app;
@@ -1481,8 +1429,10 @@ void app_render_launcher(AppState *app, UIListParams *params, int key)
         View v_files = {cx - box_w - gap/2, cy - box_h/2, box_w, box_h};
         View v_term = {cx + gap/2, cy - box_h/2, box_w, box_h};
 
-        bool h_files = ui_view_contains(&v_files, term_mouse.x, term_mouse.y);
-        bool h_term = ui_view_contains(&v_term, term_mouse.x, term_mouse.y);
+        // ui_get_mouse() is view-relative; term_mouse is absolute screen position
+        Mouse m = ui_get_mouse();
+        bool h_files = ui_view_contains(&v_files, m.x, m.y);
+        bool h_term = ui_view_contains(&v_term, m.x, m.y);
 
         Color c_files = h_files ? (Color){100, 150, 200} : (Color){50, 50, 50};
         Color c_term = h_term ? (Color){100, 150, 200} : (Color){50, 50, 50};
@@ -1492,7 +1442,7 @@ void app_render_launcher(AppState *app, UIListParams *params, int key)
         ui_rect(v_term.x, v_term.y, v_term.w, v_term.h, c_term, false);
         ui_text(v_term.x + v_term.w/2 - 4, v_term.y + v_term.h/2, "Terminal", (Color){255,255,255}, c_term, false, false);
 
-        if (term_mouse.clicked) {
+        if (m.clicked) {
                 if (h_files) {
                         app->kind = APP_KIND_FILES;
                         app_load_dir(app, app->cwd[0] ? app->cwd : getenv("HOME"));
@@ -1520,16 +1470,13 @@ void app_render_ui(AppState *app, UIListParams *params, int key)
 
         ui_list_tick_animations(s, active_r.x, active_r.y);
 
-        UIItemResult *cached_items = NULL;
-        if (app->count > 0)
+        UIItemResult *cached_items = app->count > 0 ? malloc(app->count * sizeof(UIItemResult)) : NULL;
+        if (app->count > 0 && !cached_items)
         {
-                cached_items = malloc(app->count * sizeof(UIItemResult));
-                if (!cached_items)
-                {
-                        ui_list_end(s);
-                        return;
-                }
+                ui_list_end(s);
+                return;
         }
+        defer free(cached_items);
 
         for (int i = 0; i < app->count; i++)
         {
@@ -1603,9 +1550,6 @@ void app_render_ui(AppState *app, UIListParams *params, int key)
                 }
         }
 
-        if (cached_items)
-                free(cached_items);
-
         if (ui_get_mouse().right_clicked &&
             ui_get_mouse().x >= params->x && ui_get_mouse().x < params->x + params->w &&
             ui_get_mouse().y >= params->y && ui_get_mouse().y < params->y + params->h)
@@ -1615,9 +1559,11 @@ void app_render_ui(AppState *app, UIListParams *params, int key)
 
         int footer_y = params->y + params->h;
         ui_rect(0, footer_y, params->w, 1, clr_bar, false);
-        ui_text(1, footer_y, s->carrying ? " Arrows | Enter: Drop | Esc: Cancel | Q: Quit " : " 1: View | Space: Sel | Tab: Move | Esc/Q: Quit ", (Color){0}, clr_bar, false, false);
+        ui_text(1, footer_y, s->carrying ? " Tab: Drop | Enter: Open | Esc: Cancel " : " 1: View | Space: Sel | Tab: Move | Esc/Q: Quit ", (Color){0}, clr_bar, false, false);
 
         int target = ui_context_target();
+        if (target >= app->count)
+                target = -1; // stale target after a directory reload
         bool is_empty = (target == -1);
         bool is_dir = (!is_empty && app->entries[target].is_dir);
 
@@ -1635,7 +1581,6 @@ void app_render_ui(AppState *app, UIListParams *params, int key)
                 menu_options[menu_count++] = "Open";
                 if (is_dir)
                         menu_options[menu_count++] = "View in New Tab";
-                menu_options[menu_count++] = "Rename";
                 menu_options[menu_count++] = "Delete";
                 menu_options[menu_count++] = "Cancel";
         }
@@ -1754,6 +1699,8 @@ int add_tab(const char *dir)
                         memset(&tabs[i], 0, sizeof(AppTab));
                         tabs[i].in_use = true;
                         tabs[i].app.last_hovered_idx = -1;
+                        snprintf(tabs[i].app.trash_dir, PATH_MAX, "/tmp/prism_trash_%d_%d", getpid(), i);
+                        mkdir(tabs[i].app.trash_dir, 0777);
                         if (dir)
                         {
                                 tabs[i].app.kind = APP_KIND_FILES;
@@ -1776,6 +1723,8 @@ void close_tab(int t)
 {
         if (t < 0 || !tabs[t].in_use)
                 return;
+        // Undo/redo payloads reference this tab's AppState and its freed arrays
+        ui_action_clear();
         rm_rf(tabs[t].app.trash_dir);
         free(tabs[t].app.entries);
         free(tabs[t].app.carried);
@@ -1796,24 +1745,36 @@ typedef struct
         float scrolls[MAX_TABS];
 } LayoutSave;
 
+// Recursive sanity walk of a dock tree loaded from disk: bounded, acyclic, valid kinds
+static bool dock_tree_valid(UIDockState *d, int idx, bool *seen, int depth)
+{
+        if (idx < 0 || idx >= UI_DOCK_MAX_NODES || depth > UI_DOCK_MAX_NODES)
+                return false;
+        UIDockNode *n = &d->nodes[idx];
+        if (!n->in_use || seen[idx])
+                return false;
+        seen[idx] = true;
+        if (n->kind == UI_DOCK_NODE_LEAF)
+                return true;
+        if (n->kind != UI_DOCK_NODE_SPLIT_H && n->kind != UI_DOCK_NODE_SPLIT_V)
+                return false;
+        if (!(n->split_frac >= 0.05f && n->split_frac <= 0.95f))
+                n->split_frac = 0.5f; // also catches NaN
+        n->dragging_splitter = false;
+        return dock_tree_valid(d, n->first, seen, depth + 1) && dock_tree_valid(d, n->second, seen, depth + 1);
+}
+
 bool load_layout(void)
 {
-        const char *home = getenv("HOME");
-        if (!home)
-                return false;
-        char path[PATH_MAX];
+        const char *home = getenv("HOME") orelse return false;
+        raw char path[PATH_MAX];
         snprintf(path, PATH_MAX, "%s/.cache/explore_layout.bin", home);
-        FILE *f = fopen(path, "rb");
-        if (!f)
-                return false;
+        FILE *f = fopen(path, "rb") orelse return false;
+        defer fclose(f);
 
-        LayoutSave s;
+        raw LayoutSave s;
         if (fread(&s, sizeof(s), 1, f) != 1)
-        {
-                fclose(f);
                 return false;
-        }
-        fclose(f);
 
         if (s.tab_count < 0 || s.tab_count > MAX_TABS)
                 return false;
@@ -1825,10 +1786,21 @@ bool load_layout(void)
         dock.pending_leaf = -1;
         dock.close_request_tab = -1;
         dock.add_request_leaf = -1;
+        dock.switch_flash = 0.0f;
+        dock.last_active_leaf = dock.active_leaf;
+
+        // Never trust a file from disk: the tree must be bounded, acyclic and well-typed
+        bool seen[UI_DOCK_MAX_NODES];
+        if (!dock_tree_valid(&dock, dock.root, seen, 0))
+        {
+                ui_dock_init(&dock);
+                return false;
+        }
 
         tab_count = s.tab_count;
         for (int i = 0; i < tab_count; i++)
         {
+                s.cwds[i][PATH_MAX - 1] = '\0'; // force NUL, the file may be corrupt
                 if (s.cwds[i][0] != '\0')
                 {
                         memset(&tabs[i], 0, sizeof(AppTab));
@@ -1838,30 +1810,60 @@ bool load_layout(void)
                         snprintf(tabs[i].app.trash_dir, PATH_MAX, "/tmp/prism_trash_%d_%d", getpid(), i);
                         mkdir(tabs[i].app.trash_dir, 0777);
                         app_load_dir(&tabs[i].app, s.cwds[i]);
-                        tabs[i].app.list.mode = s.modes[i];
-                        tabs[i].app.list.target_scroll = s.scrolls[i];
-                        tabs[i].app.list.current_scroll = s.scrolls[i];
+                        tabs[i].app.list.mode = (s.modes[i] == UI_MODE_LIST) ? UI_MODE_LIST : UI_MODE_GRID;
+                        float sc = s.scrolls[i];
+                        if (!(sc >= 0.0f && sc <= 1000000.0f))
+                                sc = 0.0f; // also catches NaN
+                        tabs[i].app.list.target_scroll = sc;
+                        tabs[i].app.list.current_scroll = sc;
                 }
+        }
+
+        // Drop tab references pointing at tabs that don't exist
+        int valid_tabs = 0;
+        for (int n = 0; n < UI_DOCK_MAX_NODES; n++)
+        {
+                UIDockNode *node = &dock.nodes[n];
+                if (!node->in_use || node->kind != UI_DOCK_NODE_LEAF)
+                        continue;
+                if (node->tab_count < 0 || node->tab_count > UI_DOCK_MAX_TABS)
+                        node->tab_count = 0;
+                int w = 0;
+                for (int i = 0; i < node->tab_count; i++)
+                {
+                        int t = node->tabs[i];
+                        if (t >= 0 && t < MAX_TABS && tabs[t].in_use)
+                                node->tabs[w++] = t;
+                }
+                node->tab_count = w;
+                valid_tabs += w;
+                if (ui_dock_leaf_find_tab(node, node->active_tab) < 0)
+                        node->active_tab = w > 0 ? node->tabs[0] : -1;
+        }
+        if (valid_tabs == 0)
+        {
+                for (int i = 0; i < MAX_TABS; i++)
+                        if (tabs[i].in_use)
+                                close_tab(i);
+                tab_count = 0;
+                ui_dock_init(&dock);
+                return false;
         }
         return true;
 }
 
 void save_layout(void)
 {
-        const char *home = getenv("HOME");
-        if (!home)
-                return;
-        char path[PATH_MAX];
+        const char *home = getenv("HOME") orelse return;
+        raw char path[PATH_MAX];
         snprintf(path, PATH_MAX, "%s/.cache", home);
         mkdir(path, 0755);
         snprintf(path, PATH_MAX, "%s/.cache/explore_layout.bin", home);
 
-        FILE *f = fopen(path, "wb");
-        if (!f)
-                return;
+        FILE *f = fopen(path, "wb") orelse return;
+        defer fclose(f);
 
-        LayoutSave s;
-        memset(&s, 0, sizeof(s));
+        LayoutSave s; // Prism zero-initializes the whole struct
         s.dock = dock;
         s.tab_count = tab_count;
 
@@ -1876,7 +1878,6 @@ void save_layout(void)
         }
 
         fwrite(&s, sizeof(s), 1, f);
-        fclose(f);
 }
 
 int main(int argc, char **argv)
@@ -1901,8 +1902,9 @@ int main(int argc, char **argv)
                 else
                         ui_dock_add_tab_to_leaf(&dock, 0, t1);
         }
-        else
+        else if (argc > 1)
         {
+                // Explicit directory argument: point the restored active tab at it
                 int active_leaf = dock.active_leaf;
                 if (active_leaf >= 0 && active_leaf < UI_DOCK_MAX_NODES)
                 {
@@ -2032,8 +2034,8 @@ int main(int argc, char **argv)
                                 app_process_drops(&tabs[i].app);
                 }
 
-                UITab ui_tabs[MAX_TABS] = {0};
-                char titles[MAX_TABS][PATH_MAX + 100];
+                UITab ui_tabs[MAX_TABS];
+                raw char titles[MAX_TABS][PATH_MAX + 100]; // every used slot is snprintf'd below
                 for (int i = 0; i < MAX_TABS; i++)
                 {
                         if (tabs[i].in_use)
@@ -2063,12 +2065,6 @@ int main(int argc, char **argv)
                 int add_leaf = ui_dock_take_add_request_leaf(&dock);
                 if (add_leaf >= 0)
                 {
-                        View leaf_view;
-                        int src_tab = -1;
-                        bool active = false;
-                        const char *dir = NULL;
-                        if (ui_dock_leaf_get(&dock, add_leaf, &leaf_view, &src_tab, &active) && src_tab >= 0 && tabs[src_tab].in_use)
-                                dir = tabs[src_tab].app.cwd;
                         int nt = add_tab(NULL);
                         if (nt >= 0)
                                 ui_dock_add_tab_to_leaf(&dock, add_leaf, nt);
