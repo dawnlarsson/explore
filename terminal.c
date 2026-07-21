@@ -113,6 +113,7 @@ typedef struct
 {
         View first, second;
         int divider_x;
+	int divider_y;
 } UISplitterLayout;
 
 #define UI_DOCK_MAX_TABS 64
@@ -120,16 +121,19 @@ typedef struct
 
 typedef enum
 {
-        UI_DOCK_NODE_LEAF,
-        UI_DOCK_NODE_SPLIT_H,
+	UI_DOCK_NODE_LEAF,
+	UI_DOCK_NODE_SPLIT_H,
+	UI_DOCK_NODE_SPLIT_V,
 } UIDockNodeKind;
 
 typedef enum
 {
-        UI_DOCK_DROP_NONE,
-        UI_DOCK_DROP_MERGE,
-        UI_DOCK_DROP_SPLIT_LEFT,
-        UI_DOCK_DROP_SPLIT_RIGHT,
+	UI_DOCK_DROP_NONE,
+	UI_DOCK_DROP_MERGE,
+	UI_DOCK_DROP_SPLIT_LEFT,
+	UI_DOCK_DROP_SPLIT_RIGHT,
+	UI_DOCK_DROP_SPLIT_UP,
+	UI_DOCK_DROP_SPLIT_DOWN,
 } UIDockDropKind;
 
 typedef struct
@@ -156,7 +160,8 @@ typedef struct
         float switch_flash;
         int dragging_tab;
         int drag_src_leaf;
-        int drag_start_x;
+        int drag_start_x, drag_start_y;
+	int pending_start_y;
         int pending_tab;
         int pending_leaf;
         int pending_start_x;
@@ -955,6 +960,56 @@ void ui_splitter_h_draw(const UISplitterLayout *layout, bool dragging, int y, in
                 ui_text(layout->divider_x, row, "│", div, bg, false, false);
 }
 
+
+UISplitterLayout ui_splitter_v(float *frac, bool *dragging, int x, int y, int w, int h, bool split, float min_frac, float max_frac)
+{
+        UISplitterLayout layout = {
+            .first = {x, y, w, h},
+            .second = {x, y, w, 0},
+            .divider_y = y + h};
+
+        if (!split)
+                return layout;
+
+        int divider_y = y + (int)(h * *frac);
+        bool hovering = term_mouse.y == divider_y && term_mouse.x >= x && term_mouse.x < x + w;
+        if (hovering)
+                ui_set_cursor("ns-resize");
+
+        if (term_mouse.clicked && hovering)
+                *dragging = true;
+        if (!term_mouse.left)
+                *dragging = false;
+
+        if (*dragging)
+        {
+                ui_set_cursor("ns-resize");
+                float f = (float)(term_mouse.y - y) / h;
+                if (f < min_frac)
+                        f = min_frac;
+                if (f > max_frac)
+                        f = max_frac;
+                *frac = f;
+                divider_y = y + (int)(h * *frac);
+        }
+
+        layout.first = (View){x, y, w, divider_y - y};
+        layout.second = (View){x, divider_y + 1, w, y + h - divider_y - 1};
+        layout.divider_y = divider_y;
+
+        return layout;
+}
+
+void ui_splitter_v_draw(const UISplitterLayout *layout, bool dragging, int x, int w, Color divider_fg, Color bg)
+{
+        if (!layout || layout->second.h <= 0)
+                return;
+        bool hover = (term_mouse.y == layout->divider_y && term_mouse.x >= x && term_mouse.x < x + w);
+        Color div = (dragging || hover) ? (Color){255, 255, 255} : divider_fg;
+        for (int col = x; col < x + w; col++)
+                ui_text(col, layout->divider_y, "─", div, bg, false, false);
+}
+
 static void ui_dock_reset_node(UIDockNode *node)
 {
         memset(node, 0, sizeof(*node));
@@ -1129,11 +1184,16 @@ static void ui_dock_layout_node(UIDockState *dock, int node_idx, View view)
         if (node->kind == UI_DOCK_NODE_LEAF)
                 return;
 
-        float min_f = 2.0f / (float)(view.w > 0 ? view.w : 1);
-        if (min_f > 0.4f)
-                min_f = 0.4f;
-
-        UISplitterLayout split = ui_splitter_h(&node->split_frac, &node->dragging_splitter, view.x, view.y, view.w, view.h, true, min_f, 1.0f - min_f);
+        UISplitterLayout split;
+        if (node->kind == UI_DOCK_NODE_SPLIT_V) {
+                float min_f = 2.0f / (float)(view.h > 0 ? view.h : 1);
+                if (min_f > 0.4f) min_f = 0.4f;
+                split = ui_splitter_v(&node->split_frac, &node->dragging_splitter, view.x, view.y, view.w, view.h, true, min_f, 1.0f - min_f);
+        } else {
+                float min_f = 2.0f / (float)(view.w > 0 ? view.w : 1);
+                if (min_f > 0.4f) min_f = 0.4f;
+                split = ui_splitter_h(&node->split_frac, &node->dragging_splitter, view.x, view.y, view.w, view.h, true, min_f, 1.0f - min_f);
+        }
         ui_dock_layout_node(dock, node->first, split.first);
         ui_dock_layout_node(dock, node->second, split.second);
 }
@@ -1147,18 +1207,28 @@ static void ui_dock_draw_splitters(const UIDockState *dock, int node_idx, Color 
         if (!node->in_use || node->kind == UI_DOCK_NODE_LEAF)
                 return;
 
-        int divider_x = dock->nodes[node->second].view.x - 1;
-        UISplitterLayout layout = {
-            .first = dock->nodes[node->first].view,
-            .second = dock->nodes[node->second].view,
-            .divider_x = divider_x,
-        };
-        ui_splitter_h_draw(&layout, node->dragging_splitter, node->view.y, node->view.h, divider_fg, bg);
+        if (node->kind == UI_DOCK_NODE_SPLIT_V) {
+                int divider_y = dock->nodes[node->second].view.y - 1;
+                UISplitterLayout layout = {
+                    .first = dock->nodes[node->first].view,
+                    .second = dock->nodes[node->second].view,
+                    .divider_y = divider_y,
+                };
+                ui_splitter_v_draw(&layout, node->dragging_splitter, node->view.x, node->view.w, divider_fg, bg);
+        } else {
+                int divider_x = dock->nodes[node->second].view.x - 1;
+                UISplitterLayout layout = {
+                    .first = dock->nodes[node->first].view,
+                    .second = dock->nodes[node->second].view,
+                    .divider_x = divider_x,
+                };
+                ui_splitter_h_draw(&layout, node->dragging_splitter, node->view.y, node->view.h, divider_fg, bg);
+        }
         ui_dock_draw_splitters(dock, node->first, divider_fg, bg);
         ui_dock_draw_splitters(dock, node->second, divider_fg, bg);
 }
 
-static UIDockDropKind ui_dock_drop_kind_for_leaf(const UIDockState *dock, int target_leaf, int src_leaf, int mouse_x)
+static UIDockDropKind ui_dock_drop_kind_for_leaf(const UIDockState *dock, int target_leaf, int src_leaf, int mouse_x, int mouse_y)
 {
         if (!ui_dock_is_leaf_node(dock, target_leaf))
                 return UI_DOCK_DROP_NONE;
@@ -1169,10 +1239,17 @@ static UIDockDropKind ui_dock_drop_kind_for_leaf(const UIDockState *dock, int ta
 
         int left_edge = leaf->view.x + leaf->view.w / 3;
         int right_edge = leaf->view.x + (leaf->view.w * 2) / 3;
+        int top_edge = leaf->view.y + leaf->view.h / 3;
+        int bottom_edge = leaf->view.y + (leaf->view.h * 2) / 3;
+
         if (mouse_x < left_edge)
                 return UI_DOCK_DROP_SPLIT_LEFT;
         if (mouse_x >= right_edge)
                 return UI_DOCK_DROP_SPLIT_RIGHT;
+        if (mouse_y < top_edge)
+                return UI_DOCK_DROP_SPLIT_UP;
+        if (mouse_y >= bottom_edge)
+                return UI_DOCK_DROP_SPLIT_DOWN;
         return target_leaf != src_leaf ? UI_DOCK_DROP_MERGE : UI_DOCK_DROP_NONE;
 }
 
@@ -1241,7 +1318,7 @@ bool ui_dock_add_tab_to_leaf(UIDockState *dock, int leaf_idx, int tab_id)
         return true;
 }
 
-int ui_dock_split_leaf(UIDockState *dock, int leaf_idx, bool new_leaf_before)
+int ui_dock_split_leaf(UIDockState *dock, int leaf_idx, bool new_leaf_before, bool split_vertical)
 {
         if (!ui_dock_is_leaf_node(dock, leaf_idx))
                 return -1;
@@ -1422,6 +1499,7 @@ void ui_dock_draw(UIDockState *dock, const UITab *tabs, int tab_count, Color bar
                                 dock->pending_tab = leaf->active_tab;
                                 dock->pending_leaf = leaf_idx;
                                 dock->pending_start_x = term_mouse.x;
+							dock->pending_start_y = term_mouse.y;
                                 dock->pending_frames = 0;
                         }
                         if (bar.add_clicked)
@@ -1450,6 +1528,7 @@ void ui_dock_draw(UIDockState *dock, const UITab *tabs, int tab_count, Color bar
                                 dock->dragging_tab = dock->pending_tab;
                                 dock->drag_src_leaf = dock->pending_leaf;
                                 dock->drag_start_x = dock->pending_start_x;
+								dock->drag_start_y = dock->pending_start_y;
                                 dock->pending_tab = -1;
                         }
                 }
@@ -1461,7 +1540,7 @@ void ui_dock_draw(UIDockState *dock, const UITab *tabs, int tab_count, Color bar
                 {
                         int src = dock->drag_src_leaf;
                         int dst = ui_dock_leaf_at_point(dock, dock->root, term_mouse.x, term_mouse.y);
-                        UIDockDropKind drop_kind = ui_dock_drop_kind_for_leaf(dock, dst, src, term_mouse.x);
+                        UIDockDropKind drop_kind = ui_dock_drop_kind_for_leaf(dock, dst, src, term_mouse.x, term_mouse.y);
 
                         if (drop_kind == UI_DOCK_DROP_MERGE)
                         {
@@ -1469,9 +1548,11 @@ void ui_dock_draw(UIDockState *dock, const UITab *tabs, int tab_count, Color bar
                                 ui_dock_add_tab_to_leaf(dock, dst, dock->dragging_tab);
                                 dock->active_leaf = dst;
                         }
-                        else if ((drop_kind == UI_DOCK_DROP_SPLIT_LEFT || drop_kind == UI_DOCK_DROP_SPLIT_RIGHT) && abs(term_mouse.x - dock->drag_start_x) > 5)
+                        else if (drop_kind != UI_DOCK_DROP_NONE && drop_kind != UI_DOCK_DROP_MERGE && (abs(term_mouse.x - dock->drag_start_x) > 5 || abs(term_mouse.y - dock->drag_start_y) > 5))
                         {
-                                int new_leaf = ui_dock_split_leaf(dock, dst, drop_kind == UI_DOCK_DROP_SPLIT_LEFT);
+                                bool vertical = (drop_kind == UI_DOCK_DROP_SPLIT_UP || drop_kind == UI_DOCK_DROP_SPLIT_DOWN);
+                                bool before = (drop_kind == UI_DOCK_DROP_SPLIT_LEFT || drop_kind == UI_DOCK_DROP_SPLIT_UP);
+                                int new_leaf = ui_dock_split_leaf(dock, dst, before, vertical);
                                 if (new_leaf >= 0)
                                 {
                                         ui_dock_remove_tab(dock, dock->dragging_tab);
@@ -1485,7 +1566,7 @@ void ui_dock_draw(UIDockState *dock, const UITab *tabs, int tab_count, Color bar
                 {
                         int src = dock->drag_src_leaf;
                         int dst = ui_dock_leaf_at_point(dock, dock->root, term_mouse.x, term_mouse.y);
-                        UIDockDropKind drop_kind = ui_dock_drop_kind_for_leaf(dock, dst, src, term_mouse.x);
+                        UIDockDropKind drop_kind = ui_dock_drop_kind_for_leaf(dock, dst, src, term_mouse.x, term_mouse.y);
                         View preview = ui_dock_preview_rect_for_drop(dock, dst, drop_kind);
 
                         if (preview.w > 0 && preview.h > 0)

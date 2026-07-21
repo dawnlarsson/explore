@@ -52,8 +52,10 @@ typedef struct
         AppState *app;
 } CopyAction;
 
+typedef enum AppKind { APP_KIND_FILES, APP_KIND_TERMINAL, APP_KIND_LAUNCHER } AppKind;
 struct AppState
 {
+        AppKind kind;
         FileEntry *entries;
         int capacity, count;
         char cwd[PATH_MAX], next_dir[PATH_MAX];
@@ -1462,8 +1464,54 @@ void app_process_drops(AppState *app)
         strcpy(app->next_dir, ".");
 }
 
+void app_render_launcher(AppState *app, UIListParams *params, int key)
+{
+        int w = params->w;
+        int h = params->h;
+        int x = params->x;
+        int y = params->y;
+
+        int cx = x + w / 2;
+        int cy = y + h / 2;
+
+        int box_w = 20;
+        int box_h = 10;
+        int gap = 4;
+
+        View v_files = {cx - box_w - gap/2, cy - box_h/2, box_w, box_h};
+        View v_term = {cx + gap/2, cy - box_h/2, box_w, box_h};
+
+        bool h_files = ui_view_contains(&v_files, term_mouse.x, term_mouse.y);
+        bool h_term = ui_view_contains(&v_term, term_mouse.x, term_mouse.y);
+
+        Color c_files = h_files ? (Color){100, 150, 200} : (Color){50, 50, 50};
+        Color c_term = h_term ? (Color){100, 150, 200} : (Color){50, 50, 50};
+
+        ui_rect(v_files.x, v_files.y, v_files.w, v_files.h, c_files, false);
+        ui_text(v_files.x + v_files.w/2 - 2, v_files.y + v_files.h/2, "Files", (Color){255,255,255}, c_files, false, false);
+        ui_rect(v_term.x, v_term.y, v_term.w, v_term.h, c_term, false);
+        ui_text(v_term.x + v_term.w/2 - 4, v_term.y + v_term.h/2, "Terminal", (Color){255,255,255}, c_term, false, false);
+
+        if (term_mouse.clicked) {
+                if (h_files) {
+                        app->kind = APP_KIND_FILES;
+                        app_load_dir(app, app->cwd[0] ? app->cwd : getenv("HOME"));
+                } else if (h_term) {
+                        app->kind = APP_KIND_TERMINAL;
+                }
+        }
+}
+
 void app_render_ui(AppState *app, UIListParams *params, int key)
 {
+        if (app->kind == APP_KIND_LAUNCHER) {
+                app_render_launcher(app, params, key);
+                return;
+        } else if (app->kind == APP_KIND_TERMINAL) {
+                ui_text(params->x + params->w/2 - 6, params->y + params->h/2, "Terminal WIP", (Color){255,255,255}, (Color){0,0,0}, false, false);
+                return;
+        }
+
         UIListState *s = &app->list;
         ui_list_begin(s, params, key);
 
@@ -1706,10 +1754,16 @@ int add_tab(const char *dir)
                         memset(&tabs[i], 0, sizeof(AppTab));
                         tabs[i].in_use = true;
                         tabs[i].app.last_hovered_idx = -1;
+                        if (dir)
+                        {
+                                tabs[i].app.kind = APP_KIND_FILES;
+                                app_load_dir(&tabs[i].app, dir);
+                        }
+                        else
+                        {
+                                tabs[i].app.kind = APP_KIND_LAUNCHER;
+                        }
                         ui_list_reset(&tabs[i].app.list);
-                        snprintf(tabs[i].app.trash_dir, PATH_MAX, "/tmp/prism_trash_%d_%d", getpid(), i);
-                        mkdir(tabs[i].app.trash_dir, 0777);
-                        app_load_dir(&tabs[i].app, dir);
                         if (i >= tab_count)
                                 tab_count = i + 1;
                         return i;
@@ -1841,7 +1895,7 @@ int main(int argc, char **argv)
                 int t0 = add_tab(start_dir);
                 int t1 = add_tab(start_dir);
                 ui_dock_add_tab_to_leaf(&dock, 0, t0);
-                int second_leaf = ui_dock_split_leaf(&dock, 0, false);
+                int second_leaf = ui_dock_split_leaf(&dock, 0, false, false);
                 if (second_leaf >= 0)
                         ui_dock_add_tab_to_leaf(&dock, second_leaf, t1);
                 else
@@ -2012,10 +2066,10 @@ int main(int argc, char **argv)
                         View leaf_view;
                         int src_tab = -1;
                         bool active = false;
-                        const char *dir = ".";
+                        const char *dir = NULL;
                         if (ui_dock_leaf_get(&dock, add_leaf, &leaf_view, &src_tab, &active) && src_tab >= 0 && tabs[src_tab].in_use)
                                 dir = tabs[src_tab].app.cwd;
-                        int nt = add_tab(dir);
+                        int nt = add_tab(NULL);
                         if (nt >= 0)
                                 ui_dock_add_tab_to_leaf(&dock, add_leaf, nt);
                         first_frame = true;
